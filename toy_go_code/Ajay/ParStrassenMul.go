@@ -3,21 +3,20 @@ package main
 import (
 	"flag"
 	"fmt"
-	"math/rand"
 	"time"
 	"os"
-
+	"runtime"
 )
 
 const GRAIN int = 1024*1024 /* size of product(of dimensions) below which matmultleaf is used */
 var mat1 string
 var mat2 string
+var CoreNo int
 
 func init() {
-
 	flag.StringVar(&mat1,"mat1","./data1.csv","Path to the CSV data file.")
 	flag.StringVar(&mat2,"mat2","./data2.csv","Path to the CSV data file.")
-
+	flag.IntVar(&CoreNo, "cores", 4, "specifies the number of cores Go can use to execute this code")
 }
 
 func seqMatMult(m int, n int, p int, A [][]int, B [][]int, C [][]int) {
@@ -86,14 +85,6 @@ func strassenMMult(mf, ml, nf, nl, pf, pl int, A, B, C [][]int) {
 		n2 := (nl - nf) / 2
 		p2 := (pl - pf) / 2
 
-		M1 := Allocate2DArray(m2, n2)
-		M2 := Allocate2DArray(m2, n2)
-		M3 := Allocate2DArray(m2, n2)
-		M4 := Allocate2DArray(m2, n2)
-		M5 := Allocate2DArray(m2, n2)
-		M6 := Allocate2DArray(m2, n2)
-		M7 := Allocate2DArray(m2, n2)
-
 		A11 := make([][]int, m2)
 		A12 := make([][]int, m2)
 		A21 := make([][]int, m2)
@@ -108,17 +99,6 @@ func strassenMMult(mf, ml, nf, nl, pf, pl int, A, B, C [][]int) {
 		C12 := make([][]int, m2)
 		C21 := make([][]int, m2)
 		C22 := make([][]int, m2)
-
-		tAM1 := Allocate2DArray(m2, p2)
-		tBM1 := Allocate2DArray(p2, n2)
-		tAM2 := Allocate2DArray(m2, p2)
-		tBM3 := Allocate2DArray(p2, n2)
-		tBM4 := Allocate2DArray(p2, n2)
-		tAM5 := Allocate2DArray(m2, p2)
-		tAM6 := Allocate2DArray(m2, p2)
-		tBM6 := Allocate2DArray(p2, n2)
-		tAM7 := Allocate2DArray(m2, p2)
-		tBM7 := Allocate2DArray(p2, n2)
 
 		copyQtrMatrix(A11, m2, A, mf, pf)
 		copyQtrMatrix(A12, m2, A, mf, p2)
@@ -135,36 +115,80 @@ func strassenMMult(mf, ml, nf, nl, pf, pl int, A, B, C [][]int) {
 		copyQtrMatrix(C21, m2, C, m2, nf)
 		copyQtrMatrix(C22, m2, C, m2, n2)
 
-		// M1 = (A11 + A22)*(B11 + B22) 
-		AddMats(tAM1, m2, p2, A11, A22)
-		AddMats(tBM1, p2, n2, B11, B22)
-		strassenMMult(0, m2, 0, n2, 0, p2, tAM1, tBM1, M1)
+		done := make(chan int)
+		//M1,M2,M3,M4,M5,M6,M7 [][]int
+		M1 := Allocate2DArray(m2, n2)
+		M2 := Allocate2DArray(m2, n2)
+		M3 := Allocate2DArray(m2, n2)
+		M4 := Allocate2DArray(m2, n2)
+		M5 := Allocate2DArray(m2, n2)
+		M6 := Allocate2DArray(m2, n2)
+		M7 := Allocate2DArray(m2, n2)
 
-		//M2 = (A21 + A22)*B11 
-		AddMats(tAM2, m2, p2, A21, A22)
-		strassenMMult(0, m2, 0, n2, 0, p2, tAM2, B11, M2)
+		go func(){
+			// M1 = (A11 + A22)*(B11 + B22) 
+			tAM1 := Allocate2DArray(m2, p2)
+			AddMats(tAM1, m2, p2, A11, A22)
+			tBM1 := Allocate2DArray(p2, n2)
+			AddMats(tBM1, p2, n2, B11, B22)
+			strassenMMult(0, m2, 0, n2, 0, p2, tAM1, tBM1, M1)
+			done <- 0
+		}()
+		
+		go func(){
+			//M2 = (A21 + A22)*B11 
+			tAM2 := Allocate2DArray(m2, p2)
+			AddMats(tAM2, m2, p2, A21, A22)
+			strassenMMult(0, m2, 0, n2, 0, p2, tAM2, B11, M2)
+			done <- 0
+		}()
 
-		//M3 = A11*(B12 - B22) 
-		SubMats(tBM3, p2, n2, B12, B22)
-		strassenMMult(0, m2, 0, n2, 0, p2, A11, tBM3, M3)
+		go func(){
+			//M3 = A11*(B12 - B22) 
+			tBM3 := Allocate2DArray(p2, n2)
+			SubMats(tBM3, p2, n2, B12, B22)
+			strassenMMult(0, m2, 0, n2, 0, p2, A11, tBM3, M3)
+			done <- 0
+		}()
+		go func(){
+			//M4 = A22*(B21 - B11) 
+			tBM4 := Allocate2DArray(p2, n2)
+			SubMats(tBM4, p2, n2, B21, B11)
+			strassenMMult(0, m2, 0, n2, 0, p2, A22, tBM4, M4)
+			done <- 0
+		}()
 
-		//M4 = A22*(B21 - B11) 
-		SubMats(tBM4, p2, n2, B21, B11)
-		strassenMMult(0, m2, 0, n2, 0, p2, A22, tBM4, M4)
+		go func(){
+			//M5 = (A11 + A12)*B22 
+			tAM5 := Allocate2DArray(m2, p2)
+			AddMats(tAM5, m2, p2, A11, A12)
+			strassenMMult(0, m2, 0, n2, 0, p2, tAM5, B22, M5)
+			done <- 0
+		}()
 
-		//M5 = (A11 + A12)*B22 
-		AddMats(tAM5, m2, p2, A11, A12)
-		strassenMMult(0, m2, 0, n2, 0, p2, tAM5, B22, M5)
+		go func(){
+			//M6 = (A21 - A11)*(B11 + B12) 
+			tAM6 := Allocate2DArray(m2, p2)
+			SubMats(tAM6, m2, p2, A21, A11)
+			tBM6 := Allocate2DArray(p2, n2)
+			AddMats(tBM6, p2, n2, B11, B12)
+			strassenMMult(0, m2, 0, n2, 0, p2, tAM6, tBM6, M6)
+			done <- 0
+		}()
 
-		//M6 = (A21 - A11)*(B11 + B12) 
-		SubMats(tAM6, m2, p2, A21, A11)
-		AddMats(tBM6, p2, n2, B11, B12)
-		strassenMMult(0, m2, 0, n2, 0, p2, tAM6, tBM6, M6)
-
-		//M7 = (A12 - A22)*(B21 + B22) 
-		SubMats(tAM7, m2, p2, A12, A22)
-		AddMats(tBM7, p2, n2, B21, B22)
-		strassenMMult(0, m2, 0, n2, 0, p2, tAM7, tBM7, M7)
+		go func(){
+			//M7 = (A12 - A22)*(B21 + B22) 
+			tAM7 := Allocate2DArray(m2, p2)
+			SubMats(tAM7, m2, p2, A12, A22)
+			tBM7 := Allocate2DArray(p2, n2)
+			AddMats(tBM7, p2, n2, B21, B22)
+			strassenMMult(0, m2, 0, n2, 0, p2, tAM7, tBM7, M7)
+			done <- 0
+		}()
+		
+		for cnt := 7;cnt>0;cnt--{//synchronise all running goroutines
+			<-done
+		}
 
 		for i := 0; i < m2; i++ {
 			for j := 0; j < n2; j++ {
@@ -216,52 +240,21 @@ func CheckResults(m, n int, C, C1 [][]int) bool {
 }
 
 func main() {
-	N := 0
 	flag.Parse()
 	A := OpenCsv(mat1)
 	B := OpenCsv(mat2)
 	M := A.Rows
 	P := B.Columns
-	if(A.Columns==B.Rows){
-		N = A.Columns
-	} else {
+	if(A.Columns!=B.Rows){
 		fmt.Println("These matrices cannot be multiplied, %s has %d columns and %s has %d rows",mat1,A.Columns,mat2,B.Rows)
 		os.Exit(1)
 	}
-//	A := Allocate2DArray(M, P)
-//	B := Allocate2DArray(P, N)
+	N := A.Columns
+//  A := Allocate2DArray(M, P)
+//  B := Allocate2DArray(P, N)
 	C := Allocate2DArray(M, N)
 	C4 := Allocate2DArray(M, N)
 
-<<<<<<< HEAD
-	for i := 0; i < M; i++ {
-		for j := 0; j < P; j++ {
-			A[i][j] = 5.0 - ((rand.Int() % 100) / 10.0)
-		}
-	}
-
-	for i := 0; i < P; i++ {
-		for j := 0; j < N; j++ {
-			if i == j {
-				B[i][j] = 1
-			} else {
-				B[i][j] = 0
-			}
-			//B[i][j] = 5.0 - ((rand.Int() % 100) / 10.0)
-		}
-	}
-
-	fmt.Printf("Execute Standard matmult\n\n")
-	before := time.Now()
-	seqMatMult(M, N, P, A, B, C)
-	after := time.Now()
-	fmt.Printf("Standard matrix function done in %v ns\n\n\n", (after.Sub(before)))
-
-	before = time.Now()
-	matmultS(M, N, P, A, B, C4)
-	after = time.Now()
-	fmt.Printf("Strassen matrix function done in %v ns\n\n\n", (after.Sub(before)))
-=======
 //	for i := 0; i < M; i++ {
 //		for j := 0; j < P; j++ {
 //			A[i][j] = 5.0 - ((rand.Int() % 100) / 10.0)
@@ -270,14 +263,11 @@ func main() {
 
 //	for i := 0; i < P; i++ {
 //		for j := 0; j < N; j++ {
-//			if i == j {
-//				B[i][j] = 1
-//			} else {
-//				B[i][j] = 0
-//			}
-//			//B[i][j] = 5.0 - ((rand.Int() % 100) / 10.0)
+//			B[i][j] = 5.0 - ((rand.Int() % 100) / 10.0)
 //		}
 //	}
+	
+	runtime.GOMAXPROCS(CoreNo)//set number of cores Go can use
 
 	fmt.Printf("Execute Standard matmult\n\n")
 	before := time.Now()
@@ -289,7 +279,6 @@ func main() {
 	matmultS(M, N, P, A.Data, B.Data, C4)
 	after = time.Now()
 	fmt.Printf("Strassen matrix function done in %v s\n\n\n", after.Sub(before).Seconds())
->>>>>>> 95c6e57e9ca122aafc7321a4a6b06f74c053560f
 
 	if CheckResults(M, N, C, C4) {
 		fmt.Printf("Error in matmultS\n\n")
